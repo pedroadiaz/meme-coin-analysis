@@ -1,0 +1,16 @@
+streamlit
+pandas
+numpy
+requests
+beautifulsoup4
+selenium
+webdriver-manager
+textblob
+vaderSentiment
+plotly
+python-dotenv
+aiohttp
+lxml
+fastapi
+uvicorn
+pydantic
