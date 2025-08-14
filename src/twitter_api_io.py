@@ -26,8 +26,8 @@ class TwitterAPIio:
                 query_parts.append(contract_address)
             
             # Only search for symbol with $ prefix to avoid common words
-            if symbol:
-                query_parts.append(f"${symbol}")
+            # if symbol:
+            #     query_parts.append(f"${symbol}")
             
             if not query_parts:
                 return pd.DataFrame()
