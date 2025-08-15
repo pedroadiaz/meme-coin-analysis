@@ -1,12 +1,13 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from src.token_discovery import TokenDiscovery
 from src.services.meme_coin_analyzer import MemeCoinAnalyzer
 from src.utils import validate_contract_address, format_number, get_time_ago
 import os
 from dotenv import load_dotenv
+import time
 
 load_dotenv()
 
@@ -35,6 +36,10 @@ def display_token_card(token):
         with col1:
             st.markdown(f"### {token.get('symbol', 'Unknown')} - {token.get('name', 'Unknown')}")
             st.caption(f"Chain: {token.get('chain', 'Unknown').title()} | {get_time_ago(token.get('created_at'))}")
+            
+            # Display full contract address in a copyable code block
+            contract_address = token.get('contract_address', 'Unknown')
+            st.code(contract_address, language=None)
             
             # Show top influencer if available
             if 'top_influencer' in token and token['top_influencer']:
@@ -173,6 +178,24 @@ def display_detailed_analysis(token, analyzer):
         with tab4:
             st.json(token)
 
+def refresh_data(discovery, minutes_old, min_mentions, use_mock):
+    """Helper function to refresh token data"""
+    if use_mock:
+        st.session_state['tokens_df'] = discovery.get_mock_trending_tokens()
+        st.session_state['tokens_matched_age'] = len(st.session_state['tokens_df'])
+    else:
+        # Get all tokens matching age criteria
+        all_age_matched_tokens = discovery.get_new_tokens(minutes_old)
+        st.session_state['tokens_matched_age'] = len(all_age_matched_tokens)
+        
+        # Then filter by mentions
+        st.session_state['tokens_df'] = discovery.discover_trending_tokens(
+            minutes_old=minutes_old,
+            min_mentions=min_mentions
+        )
+    st.session_state['last_refresh'] = datetime.now(timezone.utc)
+    st.session_state['minutes_old_setting'] = minutes_old
+
 def main():
     discovery = get_discovery_service()
     analyzer = get_analyzer()
@@ -184,6 +207,10 @@ def main():
         st.session_state['show_analysis'] = False
     if 'last_refresh' not in st.session_state:
         st.session_state['last_refresh'] = None
+    if 'auto_refresh' not in st.session_state:
+        st.session_state['auto_refresh'] = True  # Default to enabled
+    if 'refresh_interval' not in st.session_state:
+        st.session_state['refresh_interval'] = 120  # 2 minutes in seconds
     
     # Check if we should show detailed analysis
     if st.session_state.get('show_analysis') and st.session_state.get('selected_token'):
@@ -217,29 +244,47 @@ def main():
             value=not bool(os.getenv('TWITTERAPI_IO_KEY')),
             help="Use mock data for testing"
         )
+        st.session_state['auto_refresh'] = st.checkbox(
+            "Auto-refresh",
+            value=st.session_state.get('auto_refresh', True),
+            help="Automatically refresh data every 2 minutes"
+        )
     
     with col4:
         col4_1, col4_2 = st.columns(2)
         with col4_1:
             if st.button("🔄 Refresh Data", type="primary", use_container_width=True):
                 with st.spinner("Discovering trending tokens..."):
-                    if use_mock:
-                        st.session_state['tokens_df'] = discovery.get_mock_trending_tokens()
-                    else:
-                        st.session_state['tokens_df'] = discovery.discover_trending_tokens(
-                            minutes_old=minutes_old,
-                            min_mentions=min_mentions
-                        )
-                    st.session_state['last_refresh'] = datetime.now(timezone.utc)
+                    refresh_data(discovery, minutes_old, min_mentions, use_mock)
                     st.success(f"Found {len(st.session_state['tokens_df'])} trending tokens!")
         
         with col4_2:
             if st.session_state.get('last_refresh'):
                 st.caption(f"Last refresh: {get_time_ago(st.session_state['last_refresh'])}")
+                
+                # Show auto-refresh status
+                if st.session_state.get('auto_refresh'):
+                    time_since_refresh = datetime.now(timezone.utc) - st.session_state['last_refresh']
+                    time_until_refresh = max(0, st.session_state['refresh_interval'] - time_since_refresh.total_seconds())
+                    
+                    if time_until_refresh > 0:
+                        mins, secs = divmod(int(time_until_refresh), 60)
+                        st.caption(f"⏱️ Next refresh in {mins}:{secs:02d}")
+                    else:
+                        st.caption("⏱️ Refreshing...")
     
     # Display tokens
     if not st.session_state['tokens_df'].empty:
         st.markdown("---")
+        
+        # Display how many tokens matched the age criteria
+        if st.session_state.get('tokens_matched_age') and st.session_state.get('minutes_old_setting'):
+            tokens_matched = st.session_state['tokens_matched_age']
+            minutes_setting = st.session_state['minutes_old_setting']
+            tokens_with_mentions = len(st.session_state['tokens_df'])
+            
+            st.info(f"📊 {tokens_matched} meme coins matched the maximum age of {minutes_setting} minute{'s' if minutes_setting != 1 else ''}. "
+                   f"Of those, {tokens_with_mentions} had at least {min_mentions} Twitter mention{'s' if min_mentions != 1 else ''}.")
         
         # Summary metrics
         col1, col2, col3, col4 = st.columns(4)
@@ -263,7 +308,20 @@ def main():
             display_token_card(token.to_dict())
     
     else:
-        st.info("👆 Click 'Refresh Data' to discover trending tokens")
+        # Check if we have data about tokens that matched age criteria
+        if st.session_state.get('tokens_matched_age') is not None and st.session_state.get('minutes_old_setting'):
+            tokens_matched = st.session_state['tokens_matched_age']
+            minutes_setting = st.session_state['minutes_old_setting']
+            
+            if tokens_matched == 0:
+                st.warning(f"⚠️ No meme coins were created in the last {minutes_setting} minute{'s' if minutes_setting != 1 else ''}. "
+                          f"Try increasing the 'Max age' value.")
+            else:
+                st.info(f"📊 {tokens_matched} meme coins matched the maximum age of {minutes_setting} minute{'s' if minutes_setting != 1 else ''}, "
+                       f"but none had at least {min_mentions} Twitter mention{'s' if min_mentions != 1 else ''}. "
+                       f"Try reducing the 'Min mentions' value.")
+        else:
+            st.info("👆 Click 'Refresh Data' to discover trending tokens")
         
         # Show instructions
         with st.expander("ℹ️ How it works"):
@@ -278,6 +336,21 @@ def main():
             - Increase "Min mentions" to filter for tokens with more buzz
             - Refresh regularly to catch new opportunities
             """)
+    
+    # Auto-refresh logic - placed after content display
+    if st.session_state.get('auto_refresh') and st.session_state.get('last_refresh'):
+        time_since_refresh = datetime.now(timezone.utc) - st.session_state['last_refresh']
+        
+        if time_since_refresh.total_seconds() >= st.session_state['refresh_interval']:
+            st.info("⏱️ Auto-refreshing...")
+            time.sleep(1)  # Brief pause to show the message
+            refresh_data(discovery, minutes_old, min_mentions, use_mock)
+            st.rerun()
+        else:
+            # Schedule a rerun to update countdown and check for refresh
+            time_until_refresh = st.session_state['refresh_interval'] - time_since_refresh.total_seconds()
+            time.sleep(min(5, time_until_refresh))  # Check every 5 seconds or when ready
+            st.rerun()
 
 # Sidebar
 with st.sidebar:
